@@ -80,16 +80,17 @@ def run_bash(command: str) -> str:
 # -- The core pattern: a while loop that calls tools until the model stops --
 def agent_loop(messages: list):
     while True:
+        # 1.调用 LLM
         response = client.messages.create(
             model=MODEL, system=SYSTEM, messages=messages,
             tools=TOOLS, max_tokens=8000,
         )
-        # Append assistant turn
+        # 2.记录 assistant 回复
         messages.append({"role": "assistant", "content": response.content})
-        # If the model didn't call a tool, we're done
+        # 3.模型不再调用工具 → 退出
         if response.stop_reason != "tool_use":
             return
-        # Execute each tool call, collect results
+        # 3.执行工具调用
         results = []
         for block in response.content:
             if block.type == "tool_use":
@@ -98,6 +99,7 @@ def agent_loop(messages: list):
                 print(output[:200])
                 results.append({"type": "tool_result", "tool_use_id": block.id,
                                 "content": output})
+        # 4. 结果喂回 LLM
         messages.append({"role": "user", "content": results})
 
 
