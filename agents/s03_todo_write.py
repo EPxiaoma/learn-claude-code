@@ -51,40 +51,46 @@ Prefer tools over prose."""
 # -- TodoManager: structured state the LLM writes to --
 class TodoManager:
     def __init__(self):
-        self.items = []
+        self.items = [] # 保存所有任务的列表
 
-    def update(self, items: list) -> str:
-        if len(items) > 20:
+    # 更新 Todo 列表
+    def update(self, items: list) -> str:   # items 是 LLM 传进来的任务列表
+        if len(items) > 20:    # 限制最多 20 个任务
             raise ValueError("Max 20 todos allowed")
-        validated = []
+        validated = []  # 保存校验后的任务
         in_progress_count = 0
+        # 遍历所有任务，进行合法性校验
         for i, item in enumerate(items):
             text = str(item.get("text", "")).strip()
             status = str(item.get("status", "pending")).lower()
             item_id = str(item.get("id", str(i + 1)))
             if not text:
                 raise ValueError(f"Item {item_id}: text required")
-            if status not in ("pending", "in_progress", "completed"):
+            if status not in ("pending", "in_progress", "completed"):    # status 只能是 pending / in_progress / completed
                 raise ValueError(f"Item {item_id}: invalid status '{status}'")
             if status == "in_progress":
                 in_progress_count += 1
             validated.append({"id": item_id, "text": text, "status": status})
-        if in_progress_count > 1:
+        if in_progress_count > 1:   # 同时只能有一个 in_progress
             raise ValueError("Only one task can be in_progress at a time")
         self.items = validated
         return self.render()
 
+    # 渲染 Todo 列表，把数据转换成可读文本
     def render(self) -> str:
         if not self.items:
             return "No todos."
         lines = []
         for item in self.items:
-            marker = {"pending": "[ ]", "in_progress": "[>]", "completed": "[x]"}[item["status"]]
-            lines.append(f"{marker} #{item['id']}: {item['text']}")
-        done = sum(1 for t in self.items if t["status"] == "completed")
+            marker = {
+                "pending": "[ ]",        # 未开始
+                "in_progress": "[>]",    # 进行中
+                "completed": "[x]"       # 已完成
+            }[item["status"]]
+            lines.append(f"{marker} #{item['id']}: {item['text']}") # 拼接任务文本，例如：“ # [>] #2: 修复登录 bug ”
+        done = sum(1 for t in self.items if t["status"] == "completed") # 统计完成任务数量，例如：“ (2/5 completed) ”
         lines.append(f"\n({done}/{len(self.items)} completed)")
         return "\n".join(lines)
-
 
 TODO = TodoManager()
 
