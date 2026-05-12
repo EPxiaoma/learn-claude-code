@@ -67,8 +67,8 @@ def estimate_tokens(messages: list) -> int:
 
 # -- Layer 1: micro_compact - replace old tool results with placeholders --
 def micro_compact(messages: list) -> list:
-    # Collect (msg_index, part_index, tool_result_dict) for all tool_result entries
     tool_results = []
+    # 扫出所有 tool_result（只在 role: user 的消息里）
     for msg_idx, msg in enumerate(messages):
         if msg["role"] == "user" and isinstance(msg.get("content"), list):
             for part_idx, part in enumerate(msg["content"]):
@@ -76,8 +76,9 @@ def micro_compact(messages: list) -> list:
                     tool_results.append((msg_idx, part_idx, part))
     if len(tool_results) <= KEEP_RECENT:
         return messages
-    # Find tool_name for each result by matching tool_use_id in prior assistant messages
     tool_name_map = {}
+    # 建立 tool_use_id → tool_name 的映射（从 assistant 消息里找）
+    # tool_result 里只有 tool_use_id，没有工具名。必须反查 assistant 消息才能知道这条结果是哪个工具产生的。
     for msg in messages:
         if msg["role"] == "assistant":
             content = msg.get("content", [])
@@ -85,8 +86,7 @@ def micro_compact(messages: list) -> list:
                 for block in content:
                     if hasattr(block, "type") and block.type == "tool_use":
                         tool_name_map[block.id] = block.name
-    # Clear old results (keep last KEEP_RECENT). Preserve read_file outputs because
-    # they are reference material; compacting them forces the agent to re-read files.
+    # 压缩旧的（排除最近 3 条和 read_file）：
     to_clear = tool_results[:-KEEP_RECENT]
     for _, _, result in to_clear:
         if not isinstance(result.get("content"), str) or len(result["content"]) <= 100:
@@ -101,14 +101,14 @@ def micro_compact(messages: list) -> list:
 
 # -- Layer 2: auto_compact - save transcript, summarize, replace messages --
 def auto_compact(messages: list) -> list:
-    # Save full transcript to disk
+    # 存档（永不丢失）：用 JSONL 格式（每行一条消息），时间戳命名，方便后续检索。
     TRANSCRIPT_DIR.mkdir(exist_ok=True)
     transcript_path = TRANSCRIPT_DIR / f"transcript_{int(time.time())}.jsonl"
     with open(transcript_path, "w") as f:
         for msg in messages:
             f.write(json.dumps(msg, default=str) + "\n")
     print(f"[transcript saved: {transcript_path}]")
-    # Ask LLM to summarize
+    # 让 LLM 写摘要：
     conversation_text = json.dumps(messages, default=str)[-80000:]
     response = client.messages.create(
         model=MODEL,
@@ -121,7 +121,7 @@ def auto_compact(messages: list) -> list:
     summary = next((block.text for block in response.content if hasattr(block, "text")), "")
     if not summary:
         summary = "No summary generated."
-    # Replace all messages with compressed summary
+    # 替换全部 messages（in-place）
     return [
         {"role": "user", "content": f"[Conversation compressed. Transcript: {transcript_path}]\n\n{summary}"},
     ]
@@ -200,9 +200,9 @@ TOOLS = [
 
 def agent_loop(messages: list):
     while True:
-        # Layer 1: micro_compact before each LLM call
+        # Layer 1: 每次调用LLM前
         micro_compact(messages)
-        # Layer 2: auto_compact if token estimate exceeds threshold
+        # Layer 2: token 超过阈值
         if estimate_tokens(messages) > THRESHOLD:
             print("[auto_compact triggered]")
             messages[:] = auto_compact(messages)
@@ -230,7 +230,7 @@ def agent_loop(messages: list):
                 print(str(output)[:200])
                 results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(output)})
         messages.append({"role": "user", "content": results})
-        # Layer 3: manual compact triggered by the compact tool
+        # Layer 3: 在 messages 更新之后才触发
         if manual_compact:
             print("[manual compact]")
             messages[:] = auto_compact(messages)
