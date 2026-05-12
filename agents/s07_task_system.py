@@ -45,37 +45,48 @@ SYSTEM = f"You are a coding agent at {WORKDIR}. Use task tools to plan and track
 
 # -- TaskManager: CRUD with dependency graph, persisted as JSON files --
 class TaskManager:
+    # 初始化管理器
     def __init__(self, tasks_dir: Path):
         self.dir = tasks_dir
         self.dir.mkdir(exist_ok=True)
-        self._next_id = self._max_id() + 1
+        self._next_id = self._max_id() + 1  # 每次启动从最大 ID 续接
 
+    # 扫描 .tasks/ 目录下所有 task_*.json 文件，找到最大 ID，防止重启后 ID 重置
     def _max_id(self) -> int:
         ids = [int(f.stem.split("_")[1]) for f in self.dir.glob("task_*.json")]
         return max(ids) if ids else 0
 
+    # 根据 ID 读取对应的 JSON 文件并转换为字典
     def _load(self, task_id: int) -> dict:
         path = self.dir / f"task_{task_id}.json"
         if not path.exists():
             raise ValueError(f"Task {task_id} not found")
         return json.loads(path.read_text())
 
+    # 将任务字典保存为格式化的 JSON 文件
     def _save(self, task: dict):
         path = self.dir / f"task_{task['id']}.json"
         path.write_text(json.dumps(task, indent=2, ensure_ascii=False))
 
+    # 创建一个新任务
     def create(self, subject: str, description: str = "") -> str:
         task = {
-            "id": self._next_id, "subject": subject, "description": description,
-            "status": "pending", "blockedBy": [], "owner": "",
+            "id": self._next_id,
+            "subject": subject,
+            "description": description,
+            "status": "pending",    # 初始状态：待处理
+            "blockedBy": [],    # 依赖列表：存储阻塞该任务的其他任务 ID
+            "owner": "",
         }
         self._save(task)
         self._next_id += 1
         return json.dumps(task, indent=2, ensure_ascii=False)
 
+    # 获取特定任务的详情字符串
     def get(self, task_id: int) -> str:
         return json.dumps(self._load(task_id), indent=2, ensure_ascii=False)
 
+    # 更新任务状态或修改其依赖关系
     def update(self, task_id: int, status: str = None,
                add_blocked_by: list = None, remove_blocked_by: list = None) -> str:
         task = self._load(task_id)
@@ -92,6 +103,7 @@ class TaskManager:
         self._save(task)
         return json.dumps(task, indent=2, ensure_ascii=False)
 
+    # 当任务 A 完成时，遍历所有文件，在其他任务的 blockedBy 列表中删掉任务 A 的 ID。
     def _clear_dependency(self, completed_id: int):
         """Remove completed_id from all other tasks' blockedBy lists."""
         for f in self.dir.glob("task_*.json"):
@@ -100,6 +112,7 @@ class TaskManager:
                 task["blockedBy"].remove(completed_id)
                 self._save(task)
 
+    # 列出所有任务，并生成一个易读的文本列表
     def list_all(self) -> str:
         tasks = []
         files = sorted(
@@ -116,7 +129,6 @@ class TaskManager:
             blocked = f" (blocked by: {t['blockedBy']})" if t.get("blockedBy") else ""
             lines.append(f"{marker} #{t['id']}: {t['subject']}{blocked}")
         return "\n".join(lines)
-
 
 TASKS = TaskManager(TASKS_DIR)
 
