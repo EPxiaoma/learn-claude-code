@@ -59,9 +59,20 @@ SKILLS_DIR = WORKDIR / "skills"
 class SkillLoader:
     def __init__(self, skills_dir: Path):
         self.skills_dir = skills_dir
+        # skill 缓存
+        #
+        # 最终结构：
+        # {
+        #     "pdf": {
+        #         "meta": {...},
+        #         "body": "...",
+        #         "path": "skills/pdf/SKILL.md"
+        #     }
+        # }
         self.skills = {}
         self._load_all()
 
+    # 扫描并加载所有 skill，会递归查找：*/SKILL.md
     def _load_all(self):
         if not self.skills_dir.exists():
             return
@@ -71,8 +82,17 @@ class SkillLoader:
             name = meta.get("name", f.parent.name)
             self.skills[name] = {"meta": meta, "body": body, "path": str(f)}
 
+    # 获取 YAML frontmatter
+    #
+    # frontmatter格式：
+    #
+    # ---
+    # name: pdf
+    # description: PDF
+    # skill
+    # tags: pdf, document
+    # ---
     def _parse_frontmatter(self, text: str) -> tuple:
-        """Parse YAML frontmatter between --- delimiters."""
         match = re.match(r"^---\n(.*?)\n---\n(.*)", text, re.DOTALL)
         if not match:
             return {}, text
@@ -82,6 +102,7 @@ class SkillLoader:
             meta = {}
         return meta, match.group(2).strip()
 
+    # 获取所有 skill 的简短描述
     def get_descriptions(self) -> str:
         """Layer 1: short descriptions for the system prompt."""
         if not self.skills:
@@ -96,13 +117,13 @@ class SkillLoader:
             lines.append(line)
         return "\n".join(lines)
 
+    #  获取 skill 的完整内容，模型按需加载 skill
     def get_content(self, name: str) -> str:
         """Layer 2: full skill body returned in tool_result."""
         skill = self.skills.get(name)
         if not skill:
             return f"Error: Unknown skill '{name}'. Available: {', '.join(self.skills.keys())}"
         return f"<skill name=\"{name}\">\n{skill['body']}\n</skill>"
-
 
 SKILL_LOADER = SkillLoader(SKILLS_DIR)
 
