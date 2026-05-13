@@ -51,10 +51,10 @@ MODEL = os.environ["MODEL_ID"]
 
 
 def detect_repo_root(cwd: Path) -> Path | None:
-    """Return git repo root if cwd is inside a repo, else None."""
+    # 执行 git 命令来查找根目录
     try:
         r = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
+            ["git", "rev-parse", "--show-toplevel"],    # # "rev-parse --show-toplevel" 是 Git 的标准命令，用于返回仓库顶层目录的绝对路径
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -87,6 +87,7 @@ class EventBus:
         if not self.path.exists():
             self.path.write_text("")
 
+    # 创建一个事件
     def emit(
         self,
         event: str,
@@ -95,18 +96,19 @@ class EventBus:
         error: str | None = None,
     ):
         payload = {
-            "event": event,
-            "ts": time.time(),
-            "task": task or {},
-            "worktree": worktree or {},
+            "event": event, # 事件名称
+            "ts": time.time(), # 时间戳
+            "task": task or {}, # 任务信息
+            "worktree": worktree or {}, # 工作树信息
         }
         if error:
             payload["error"] = error
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(payload) + "\n")
 
+    # 读取并返回最近发生的事件
     def list_recent(self, limit: int = 20) -> str:
-        n = max(1, min(int(limit or 20), 200))
+        n = max(1, min(int(limit or 20), 200)) # # 限制读取范围在 1 到 200 条之间，防止内存溢出
         lines = self.path.read_text(encoding="utf-8").splitlines()
         recent = lines[-n:]
         items = []
@@ -180,17 +182,21 @@ class TaskManager:
         self._save(task)
         return json.dumps(task, indent=2)
 
+    # 将一个任务与特定的工作树（目录空间）进行绑定。
     def bind_worktree(self, task_id: int, worktree: str, owner: str = "") -> str:
-        task = self._load(task_id)
-        task["worktree"] = worktree
+        task = self._load(task_id)  # 从磁盘加载指定 ID 的任务数据（JSON）
+        task["worktree"] = worktree # 建立关联：记录该任务目前正在哪个工作树中执行
+        # 如果指定了负责人（owner），则更新负责人信息
         if owner:
             task["owner"] = owner
+        # 状态自动转换：如果任务之前是“待处理(pending)”，现在既然分配了工作空间，状态自动升级为“进行中(in_progress)”
         if task["status"] == "pending":
             task["status"] = "in_progress"
-        task["updated_at"] = time.time()
+        task["updated_at"] = time.time()    # 更新任务更新时间
         self._save(task)
         return json.dumps(task, indent=2)
 
+    # 解除任务与工作树的绑定关系。
     def unbind_worktree(self, task_id: int) -> str:
         task = self._load(task_id)
         task["worktree"] = ""
@@ -225,15 +231,16 @@ EVENTS = EventBus(REPO_ROOT / ".worktrees" / "events.jsonl")
 class WorktreeManager:
     def __init__(self, repo_root: Path, tasks: TaskManager, events: EventBus):
         self.repo_root = repo_root
-        self.tasks = tasks
+        self.tasks = tasks  # 任务管理器，用于关联 worktree 与任务
         self.events = events
-        self.dir = repo_root / ".worktrees"
+        self.dir = repo_root / ".worktrees" # 所有的隔离环境都放在项目根目录下的 .worktrees 文件夹内
         self.dir.mkdir(parents=True, exist_ok=True)
-        self.index_path = self.dir / "index.json"
+        self.index_path = self.dir / "index.json"   # index.json 用于记录当前所有活跃或已知的隔离环境状态
         if not self.index_path.exists():
             self.index_path.write_text(json.dumps({"worktrees": []}, indent=2))
         self.git_available = self._is_git_repo()
 
+    # 检查当前目录是否是一个合法的 Git 仓库
     def _is_git_repo(self) -> bool:
         try:
             r = subprocess.run(
@@ -247,6 +254,7 @@ class WorktreeManager:
         except Exception:
             return False
 
+    # 统一的 Git 命令执行器，带错误处理和超时机制
     def _run_git(self, args: list[str]) -> str:
         if not self.git_available:
             raise RuntimeError("Not in a git repository. worktree tools require git.")
@@ -262,12 +270,15 @@ class WorktreeManager:
             raise RuntimeError(msg or f"git {' '.join(args)} failed")
         return (r.stdout + r.stderr).strip() or "(no output)"
 
+    # 从磁盘读取并反序列化 index.json
     def _load_index(self) -> dict:
         return json.loads(self.index_path.read_text())
 
+    # 将索引数据序列化后写回 index.json
     def _save_index(self, data: dict):
         self.index_path.write_text(json.dumps(data, indent=2))
 
+    # 按名称在索引中查找 worktree 条目，不存在则返回 None
     def _find(self, name: str) -> dict | None:
         idx = self._load_index()
         for wt in idx.get("worktrees", []):
@@ -275,12 +286,14 @@ class WorktreeManager:
                 return wt
         return None
 
+    # 校验 worktree 名称合法性。
     def _validate_name(self, name: str):
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,40}", name or ""):
             raise ValueError(
                 "Invalid worktree name. Use 1-40 chars: letters, numbers, ., _, -"
             )
 
+    # 创建一个新的 Git worktree 并注册到索引。
     def create(self, name: str, task_id: int = None, base_ref: str = "HEAD") -> str:
         self._validate_name(name)
         if self._find(name):
@@ -296,6 +309,7 @@ class WorktreeManager:
             worktree={"name": name, "base_ref": base_ref},
         )
         try:
+            # 调用 Git 在指定路径创建新分支的 worktree
             self._run_git(["worktree", "add", "-b", branch, str(path), base_ref])
 
             entry = {
@@ -307,6 +321,7 @@ class WorktreeManager:
                 "created_at": time.time(),
             }
 
+            # 若指定了任务，则在任务管理器中建立双向绑定
             idx = self._load_index()
             idx["worktrees"].append(entry)
             self._save_index(idx)
@@ -334,6 +349,7 @@ class WorktreeManager:
             )
             raise
 
+    # 返回所有已注册 worktree 的格式化列表（含状态、路径、分支、关联任务）
     def list_all(self) -> str:
         idx = self._load_index()
         wts = idx.get("worktrees", [])
@@ -348,6 +364,7 @@ class WorktreeManager:
             )
         return "\n".join(lines)
 
+    # 返回指定 worktree 的 Git 工作区状态
     def status(self, name: str) -> str:
         wt = self._find(name)
         if not wt:
@@ -365,7 +382,9 @@ class WorktreeManager:
         text = (r.stdout + r.stderr).strip()
         return text or "Clean worktree"
 
+    # 在指定 worktree 目录下执行 Shell 命令
     def run(self, name: str, command: str) -> str:
+        # 高危命令黑名单，命中则直接拒绝执行
         dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
         if any(d in command for d in dangerous):
             return "Error: Dangerous command blocked"
@@ -380,17 +399,18 @@ class WorktreeManager:
         try:
             r = subprocess.run(
                 command,
-                shell=True,
+                shell=True, # 使用 shell 解析，支持管道等复杂语法
                 cwd=path,
                 capture_output=True,
                 text=True,
                 timeout=300,
             )
             out = (r.stdout + r.stderr).strip()
-            return out[:50000] if out else "(no output)"
+            return out[:50000] if out else "(no output)"    # 防止超大输出撑爆内存
         except subprocess.TimeoutExpired:
             return "Error: Timeout (300s)"
 
+    #  移除指定的 Git worktree。
     def remove(self, name: str, force: bool = False, complete_task: bool = False) -> str:
         wt = self._find(name)
         if not wt:
@@ -404,10 +424,11 @@ class WorktreeManager:
         try:
             args = ["worktree", "remove"]
             if force:
-                args.append("--force")
+                args.append("--force")  # 强制模式：忽略未提交的改动
             args.append(wt["path"])
             self._run_git(args)
 
+            # 可选：移除 worktree 的同时将关联任务标记为已完成
             if complete_task and wt.get("task_id") is not None:
                 task_id = wt["task_id"]
                 before = json.loads(self.tasks.get(task_id))
@@ -423,6 +444,7 @@ class WorktreeManager:
                     worktree={"name": name},
                 )
 
+            # 在索引中将状态更新为 removed，保留历史记录而非直接删除条目
             idx = self._load_index()
             for item in idx.get("worktrees", []):
                 if item.get("name") == name:
@@ -445,6 +467,7 @@ class WorktreeManager:
             )
             raise
 
+    # 将 worktree 状态标记为 kept（手动保留），防止被自动清理策略误删。同时记录 kept_at 时间戳并发布对应事件。
     def keep(self, name: str) -> str:
         wt = self._find(name)
         if not wt:
@@ -469,7 +492,6 @@ class WorktreeManager:
             },
         )
         return json.dumps(kept, indent=2) if kept else f"Error: Unknown worktree '{name}'"
-
 
 WORKTREES = WorktreeManager(REPO_ROOT, TASKS, EVENTS)
 
