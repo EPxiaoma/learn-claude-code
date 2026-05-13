@@ -49,22 +49,22 @@ SYSTEM = f"You are a coding agent at {WORKDIR}. Use background_run for long-runn
 # -- BackgroundManager: threaded execution + notification queue --
 class BackgroundManager:
     def __init__(self):
-        self.tasks = {}  # task_id -> {status, result, command}
-        self._notification_queue = []  # completed task results
+        self.tasks = {}  # 存储所有任务的详细信息：task_id -> {状态, 结果, 原始命令}
+        self._notification_queue = []  # 通知队列：存放已完成任务的摘要，用于后续主动推送给 LLM
         self._lock = threading.Lock()
 
+    # 启动一个后台线程执行命令，并立即返回任务 ID（不阻塞主程序）
     def run(self, command: str) -> str:
-        """Start a background thread, return task_id immediately."""
-        task_id = str(uuid.uuid4())[:8]
+        task_id = str(uuid.uuid4())[:8] # 生成 8 位短 ID
         self.tasks[task_id] = {"status": "running", "result": None, "command": command}
         thread = threading.Thread(
             target=self._execute, args=(task_id, command), daemon=True
         )
         thread.start()
-        return f"Background task {task_id} started: {command[:80]}"
+        return f"Background task {task_id} started: {command[:80]}" # # 立即给 Agent 返回启动信息，方便 Agent 继续处理其他逻辑
 
+    # 线程内部执行函数：运行子进程、捕获输出并存入通知队列
     def _execute(self, task_id: str, command: str):
-        """Thread target: run subprocess, capture output, push to queue."""
         try:
             r = subprocess.run(
                 command, shell=True, cwd=WORKDIR,
@@ -85,11 +85,11 @@ class BackgroundManager:
                 "task_id": task_id,
                 "status": status,
                 "command": command[:80],
-                "result": (output or "(no output)")[:500],
+                "result": (output or "(no output)")[:500],  # # 存入队列的结果仅保留前 500 字，作为摘要告知 Agent
             })
 
+    # 供 Agent 主动调用：检查特定任务的状态或列出所有后台任务
     def check(self, task_id: str = None) -> str:
-        """Check status of one task or list all."""
         if task_id:
             t = self.tasks.get(task_id)
             if not t:
@@ -100,13 +100,12 @@ class BackgroundManager:
             lines.append(f"{tid}: [{t['status']}] {t['command'][:60]}")
         return "\n".join(lines) if lines else "No background tasks."
 
+    # 清空并返回当前通知队列中的所有消息（类似“收件箱”功能）
     def drain_notifications(self) -> list:
-        """Return and clear all pending completion notifications."""
         with self._lock:
             notifs = list(self._notification_queue)
             self._notification_queue.clear()
         return notifs
-
 
 BG = BackgroundManager()
 
@@ -187,7 +186,7 @@ TOOLS = [
 
 def agent_loop(messages: list):
     while True:
-        # Drain background notifications and inject as system message before LLM call
+        # 每次 LLM 调用前，先把后台完成的任务结果注入
         notifs = BG.drain_notifications()
         if notifs and messages:
             notif_text = "\n".join(
