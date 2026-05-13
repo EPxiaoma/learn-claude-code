@@ -66,20 +66,21 @@ INBOX_DIR = TEAM_DIR / "inbox"
 SYSTEM = f"You are a team lead at {WORKDIR}. Spawn teammates and communicate via inboxes."
 
 VALID_MSG_TYPES = {
-    "message",
-    "broadcast",
-    "shutdown_request",
-    "shutdown_response",
-    "plan_approval_response",
+    "message",  # 标准点对点消息：用于 Agent 之间的普通任务分发或对话。
+    "broadcast",  # 全局广播消息：Lead 发送给所有 Teammates 的指令或公告。
+    "shutdown_request",  # 关机请求：Agent 申请停止运行（通常在任务全部完成后由 Lead 发起）。
+    "shutdown_response",  # 关机响应：Agent 确认已收到停机指令并准备退出的反馈。
+    "plan_approval_response",  # 计划审批响应：当 Agent 提交了一个行动方案（Plan）时，专门用于记录“批准”或“拒绝”该方案的消息。
 }
 
 
 # -- MessageBus: JSONL inbox per teammate --
 class MessageBus:
     def __init__(self, inbox_dir: Path):
-        self.dir = inbox_dir
+        self.dir = inbox_dir    # 存放所有成员收件箱文件的目录路径
         self.dir.mkdir(parents=True, exist_ok=True)
 
+    # 发送消息给指定的智能体
     def send(self, sender: str, to: str, content: str,
              msg_type: str = "message", extra: dict = None) -> str:
         if msg_type not in VALID_MSG_TYPES:
@@ -97,6 +98,7 @@ class MessageBus:
             f.write(json.dumps(msg) + "\n")
         return f"Sent {msg_type} to {to}"
 
+    # 读取并清空（消费）指定智能体的收件箱
     def read_inbox(self, name: str) -> list:
         inbox_path = self.dir / f"{name}.jsonl"
         if not inbox_path.exists():
@@ -105,17 +107,19 @@ class MessageBus:
         for line in inbox_path.read_text().strip().splitlines():
             if line:
                 messages.append(json.loads(line))
+        # 读取后立即清空文件内容，确保消息不会被重复消费
         inbox_path.write_text("")
         return messages
 
+    # 向团队中除发送者外的所有成员广播消息
     def broadcast(self, sender: str, content: str, teammates: list) -> str:
         count = 0
         for name in teammates:
+            # 避免发给自己
             if name != sender:
                 self.send(sender, name, content, "broadcast")
                 count += 1
         return f"Broadcast to {count} teammates"
-
 
 BUS = MessageBus(INBOX_DIR)
 
@@ -125,35 +129,42 @@ class TeammateManager:
     def __init__(self, team_dir: Path):
         self.dir = team_dir
         self.dir.mkdir(exist_ok=True)
-        self.config_path = self.dir / "config.json"
-        self.config = self._load_config()
-        self.threads = {}
+        self.config_path = self.dir / "config.json" # 存储团队成员状态的配置文件
+        self.config = self._load_config()   # 加载已有配置
+        self.threads = {}   # 运行时存放所有 Agent 线程的字典
 
+    # 从 JSON 文件加载团队配置，若不存在则初始化默认值
     def _load_config(self) -> dict:
         if self.config_path.exists():
             return json.loads(self.config_path.read_text())
         return {"team_name": "default", "members": []}
 
+    # 将当前团队成员的状态持久化保存到磁盘
     def _save_config(self):
         self.config_path.write_text(json.dumps(self.config, indent=2))
 
+    # 根据名称在配置中查找成员对象
     def _find_member(self, name: str) -> dict:
         for m in self.config["members"]:
             if m["name"] == name:
                 return m
         return None
 
+    # 诞生（创建并启动）一个持久化的智能体
     def spawn(self, name: str, role: str, prompt: str) -> str:
         member = self._find_member(name)
         if member:
+            # 如果成员已存在，检查其状态
             if member["status"] not in ("idle", "shutdown"):
                 return f"Error: '{name}' is currently {member['status']}"
+            # 唤醒已存在的成员
             member["status"] = "working"
             member["role"] = role
         else:
             member = {"name": name, "role": role, "status": "working"}
             self.config["members"].append(member)
         self._save_config()
+        # 为该智能体开启独立线程，实现并行协作
         thread = threading.Thread(
             target=self._teammate_loop,
             args=(name, role, prompt),
@@ -163,6 +174,7 @@ class TeammateManager:
         thread.start()
         return f"Spawned '{name}' (role: {role})"
 
+    # 每个 Teammate 的 agent loop
     def _teammate_loop(self, name: str, role: str, prompt: str):
         sys_prompt = (
             f"You are '{name}', role: {role}, at {WORKDIR}. "
@@ -170,7 +182,9 @@ class TeammateManager:
         )
         messages = [{"role": "user", "content": prompt}]
         tools = self._teammate_tools()
+        # 限制单次任务的最大步数，防止死循环
         for _ in range(50):
+            # 检查自己的文件收件箱
             inbox = BUS.read_inbox(name)
             for msg in inbox:
                 messages.append({"role": "user", "content": json.dumps(msg)})
@@ -198,11 +212,13 @@ class TeammateManager:
                         "content": str(output),
                     })
             messages.append({"role": "user", "content": results})
+        # 任务完成或异常中断后，将状态设为闲置（idle）
         member = self._find_member(name)
         if member and member["status"] != "shutdown":
             member["status"] = "idle"
             self._save_config()
 
+    # 工具分发器：根据名称调用对应的功能函数
     def _exec(self, sender: str, tool_name: str, args: dict) -> str:
         # these base tools are unchanged from s02
         if tool_name == "bash":
@@ -219,6 +235,7 @@ class TeammateManager:
             return json.dumps(BUS.read_inbox(sender), indent=2)
         return f"Unknown tool: {tool_name}"
 
+    # 工具
     def _teammate_tools(self) -> list:
         # these base tools are unchanged from s02
         return [
@@ -236,6 +253,7 @@ class TeammateManager:
              "input_schema": {"type": "object", "properties": {}}},
         ]
 
+    # 列出当前所有成员及其状态
     def list_all(self) -> str:
         if not self.config["members"]:
             return "No teammates."
@@ -244,9 +262,9 @@ class TeammateManager:
             lines.append(f"  {m['name']} ({m['role']}): {m['status']}")
         return "\n".join(lines)
 
+    # 获取所有成员名字的列表
     def member_names(self) -> list:
         return [m["name"] for m in self.config["members"]]
-
 
 TEAM = TeammateManager(TEAM_DIR)
 
@@ -344,6 +362,7 @@ TOOLS = [
 
 def agent_loop(messages: list):
     while True:
+        # Lead 自己也先读收件箱
         inbox = BUS.read_inbox("lead")
         if inbox:
             messages.append({
