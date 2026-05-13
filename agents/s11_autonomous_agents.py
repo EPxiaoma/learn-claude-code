@@ -124,6 +124,7 @@ BUS = MessageBus(INBOX_DIR)
 
 
 # -- Task board scanning --
+# 扫描任务板，寻找目前处于空闲状态、可被领取的任务。
 def scan_unclaimed_tasks() -> list:
     TASKS_DIR.mkdir(exist_ok=True)
     unclaimed = []
@@ -135,8 +136,9 @@ def scan_unclaimed_tasks() -> list:
             unclaimed.append(task)
     return unclaimed
 
-
+# 执行认领动作。
 def claim_task(task_id: int, owner: str) -> str:
+    # 使用线程锁，防止多个智能体同时修改同一个任务文件产生竞态条件
     with _claim_lock:
         path = TASKS_DIR / f"task_{task_id}.json"
         if not path.exists():
@@ -223,7 +225,7 @@ class TeammateManager:
         tools = self._teammate_tools()
 
         while True:
-            # -- WORK PHASE: standard agent loop --
+            # --WORK 阶段: 标准的 agent loop --
             for _ in range(50):
                 inbox = BUS.read_inbox(name)
                 for msg in inbox:
@@ -240,6 +242,7 @@ class TeammateManager:
                         max_tokens=8000,
                     )
                 except Exception:
+                    # 遇到 API 错误等异常时，强制进入 idle 状态并退出
                     self._set_status(name, "idle")
                     return
                 messages.append({"role": "assistant", "content": response.content})
@@ -249,6 +252,7 @@ class TeammateManager:
                 idle_requested = False
                 for block in response.content:
                     if block.type == "tool_use":
+                        # 特殊工具判断：如果 AI 主动调用 idle，标记进入休眠模式
                         if block.name == "idle":
                             idle_requested = True
                             output = "Entering idle phase. Will poll for new tasks."
@@ -261,15 +265,19 @@ class TeammateManager:
                             "content": str(output),
                         })
                 messages.append({"role": "user", "content": results})
+                # 如果 AI 刚才决定进入 idle，则立即中断 WORK 循环
                 if idle_requested:
                     break
 
-            # -- IDLE PHASE: poll for inbox messages and unclaimed tasks --
+            # -- IDLE 阶段: 轮询收件箱和未领取的任务 --
             self._set_status(name, "idle")
             resume = False
+            # 计算轮询次数
             polls = IDLE_TIMEOUT // max(POLL_INTERVAL, 1)
             for _ in range(polls):
                 time.sleep(POLL_INTERVAL)
+
+                # 检查是否有新消息（如 Leader 指派了新任务）
                 inbox = BUS.read_inbox(name)
                 if inbox:
                     for msg in inbox:
@@ -277,26 +285,30 @@ class TeammateManager:
                             self._set_status(name, "shutdown")
                             return
                         messages.append({"role": "user", "content": json.dumps(msg)})
-                    resume = True
+                    resume = True   # 标记为需重新开始工作
                     break
+                # 扫描任务板
                 unclaimed = scan_unclaimed_tasks()
                 if unclaimed:
                     task = unclaimed[0]
+                    # 尝试认领第一个任务
                     result = claim_task(task["id"], name)
                     if result.startswith("Error:"):
-                        continue
+                        continue    # 如果被别人抢先领了，继续下一轮轮询
                     task_prompt = (
                         f"<auto-claimed>Task #{task['id']}: {task['subject']}\n"
                         f"{task.get('description', '')}</auto-claimed>"
                     )
-                    if len(messages) <= 3:
+                    # 身份补全：如果对话历史被大幅度压缩或过短，手动插入身份块，确保智能体知道自己是谁。
+                    if len(messages) <= 3:  # 上下文很短 = 可能发生过压缩
                         messages.insert(0, make_identity_block(name, role, team_name))
                         messages.insert(1, {"role": "assistant", "content": f"I am {name}. Continuing."})
                     messages.append({"role": "user", "content": task_prompt})
                     messages.append({"role": "assistant", "content": f"Claimed task #{task['id']}. Working on it."})
-                    resume = True
+                    resume = True   # 成功领到活，跳回 WORK 状态
                     break
 
+            # 如果在 60 秒内没找到任何工作，则自动下线（Shutdown）
             if not resume:
                 self._set_status(name, "shutdown")
                 return
