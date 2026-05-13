@@ -79,8 +79,8 @@ VALID_MSG_TYPES = {
 }
 
 # -- Request trackers: correlate by request_id --
-shutdown_requests = {}
-plan_requests = {}
+shutdown_requests = {}  # {req_id: {"target": name, "status": "pending|approved|rejected"}}
+plan_requests = {}  # {req_id: {"from": name, "plan": "...", "status": "pending|..."}}
 _tracker_lock = threading.Lock()
 
 
@@ -181,6 +181,7 @@ class TeammateManager:
         )
         messages = [{"role": "user", "content": prompt}]
         tools = self._teammate_tools()
+        # 循环开头检查 should_exit，而不是当场 break
         should_exit = False
         for _ in range(50):
             inbox = BUS.read_inbox(name)
@@ -211,6 +212,7 @@ class TeammateManager:
                         "tool_use_id": block.id,
                         "content": str(output),
                     })
+                    # 等当轮所有工具调用都处理完，再标记退出
                     if block.name == "shutdown_response" and block.input.get("approve"):
                         should_exit = True
             messages.append({"role": "user", "content": results})
